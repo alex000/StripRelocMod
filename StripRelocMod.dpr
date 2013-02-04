@@ -1,4 +1,4 @@
-program StripReloc;
+program StripRelocMod;
 {$APPTYPE CONSOLE}
 
 {
@@ -30,7 +30,7 @@ uses
 {x$R *.RES}
 
 const
-  Version = '1.13';
+  Version = '1.13 mod';
 
 var
   KeepBackups: Boolean = True;
@@ -81,16 +81,20 @@ var
   PEOptHeader: TImageOptionalHeader;
   PESectionHeaders: PPESectionHeaderArray;
   BytesLeft, Bytes: Cardinal;
+  xBytesSize: Cardinal;
   Buf: array[0..8191] of Byte;
   I: Integer;
   RelocVirtualAddr, RelocPhysOffset, RelocPhysSize: Cardinal;
+  ExportVirtualAddr, ExportPhysOffset, ExportPhysSize: Cardinal;
   OldSize, NewSize: Cardinal;
   TimeStamp: TFileTime;
 begin
   PESectionHeaders := nil;
   try
-    RelocPhysOffset := 0;
-    RelocPhysSize := 0;
+    RelocPhysOffset  := 0;
+    RelocPhysSize    := 0;
+    ExportPhysOffset := 0;
+    ExportPhysSize   := 0;
     BackupFilename := Filename + '.bak';
 
     Write(Filename, ': ');
@@ -142,21 +146,35 @@ begin
         Writeln('Relocations already stripped from file (2).');
         Exit;
       end;
+
       RelocVirtualAddr := PEOptHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress;
       PEOptHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress := 0;
       PEOptHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size := 0;
+
+      ExportVirtualAddr := PEOptHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+      PEOptHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress := 0;
+      PEOptHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size := 0;
+
       if not WantValidChecksum then
         PEOptHeader.CheckSum := 0;
       GetMem(PESectionHeaders, PEHeader.NumberOfSections * SizeOf(TImageSectionHeader));
       BlockRead(F, PESectionHeaders^, PEHeader.NumberOfSections * SizeOf(TImageSectionHeader));
       for I := 0 to PEHeader.NumberOfSections-1 do
         with PESectionHeaders[I] do
+        begin
           if (VirtualAddress = RelocVirtualAddr) and (SizeOfRawData <> 0) then begin
             RelocPhysOffset := PointerToRawData;
             RelocPhysSize := SizeOfRawData;
             SizeOfRawData := 0;
-            Break;
+           // Break;
           end;
+          if (VirtualAddress = ExportVirtualAddr) and (SizeOfRawData <> 0) then begin
+            ExportPhysOffset := PointerToRawData;
+            ExportPhysSize := SizeOfRawData;
+            SizeOfRawData := 0;
+           // Break;
+          end;
+        end;
       if RelocPhysOffset = 0 then begin
         Writeln('Relocations already stripped from file (3).');
         Exit;
@@ -165,12 +183,28 @@ begin
         Writeln('Relocations already stripped from file (4).');
         Exit;
       end;
+      if ExportPhysOffset = 0 then begin
+        Writeln('Exports already stripped from file (3).');
+        Exit;
+      end;
+      if ExportPhysSize = 0 then begin
+        Writeln('Exports already stripped from file (4).');
+        Exit;
+      end;
+
       for I := 0 to PEHeader.NumberOfSections-1 do
-        with PESectionHeaders[I] do begin
+        with PESectionHeaders[I] do
+        begin
           if PointerToRawData > RelocPhysOffset then
             Dec(PointerToRawData, RelocPhysSize);
           if PointerToLinenumbers > RelocPhysOffset then
             Dec(PointerToLinenumbers, RelocPhysSize);
+
+          if PointerToRawData > ExportPhysOffset then
+            Dec(PointerToRawData, ExportPhysSize);
+          if PointerToLinenumbers > ExportPhysOffset then
+            Dec(PointerToLinenumbers, ExportPhysSize);
+
           if PointerToRelocations <> 0 then begin
             { ^ I don't think this field is ever used in the PE format.
               StripRlc doesn't handle it. }
@@ -196,23 +230,68 @@ begin
         FileMode := fmOpenWrite or fmShareExclusive;
         Rewrite(F2, 1);
         try
-          BytesLeft := RelocPhysOffset;
-          while BytesLeft <> 0 do begin
-            Bytes := BytesLeft;
-            if Bytes > SizeOf(Buf) then Bytes := SizeOf(Buf);
-            BlockRead(F, Buf, Bytes);
-            BlockWrite(F2, Buf, Bytes);
-            Dec(BytesLeft, Bytes);
+
+          if (RelocPhysOffset < ExportPhysOffset) then
+          begin
+            // -- strip reloc + Export
+            BytesLeft := RelocPhysOffset;
+            while BytesLeft <> 0 do begin
+              Bytes := BytesLeft;
+              if Bytes > SizeOf(Buf) then Bytes := SizeOf(Buf);
+              BlockRead(F, Buf, Bytes);
+              BlockWrite(F2, Buf, Bytes);
+              Dec(BytesLeft, Bytes);
+            end;
+            Seek(F, Cardinal(FilePos(F)) + RelocPhysSize);
+            BytesLeft := ExportPhysOffset - RelocPhysSize - FilePos(F);
+            while BytesLeft <> 0 do begin
+              Bytes := BytesLeft;
+              if Bytes > SizeOf(Buf) then Bytes := SizeOf(Buf);
+              BlockRead(F, Buf, Bytes);
+              BlockWrite(F2, Buf, Bytes);
+              Dec(BytesLeft, Bytes);
+            end;
+            Seek(F, Cardinal(FilePos(F)) + ExportPhysSize);
+            BytesLeft := FileSize(F) - FilePos(F);
+            while BytesLeft <> 0 do begin
+              Bytes := BytesLeft;
+              if Bytes > SizeOf(Buf) then Bytes := SizeOf(Buf);
+              BlockRead(F, Buf, Bytes);
+              BlockWrite(F2, Buf, Bytes);
+              Dec(BytesLeft, Bytes);
+            end;
+          end
+          else
+          begin
+            // -- strip Export + reloc
+            BytesLeft := ExportPhysOffset;
+            while BytesLeft <> 0 do begin
+              Bytes := BytesLeft;
+              if Bytes > SizeOf(Buf) then Bytes := SizeOf(Buf);
+              BlockRead(F, Buf, Bytes);
+              BlockWrite(F2, Buf, Bytes);
+              Dec(BytesLeft, Bytes);
+            end;
+            Seek(F, Cardinal(FilePos(F)) + ExportPhysSize);  //   FilePos(F) = ExportPhysOffset + ExportPhysSize
+            BytesLeft := RelocPhysOffset - FilePos(F);      //   RelocPhysOffset - (ExportPhysOffset + ExportPhysSize)
+            while BytesLeft <> 0 do begin
+              Bytes := BytesLeft;
+              if Bytes > SizeOf(Buf) then Bytes := SizeOf(Buf);
+              BlockRead(F, Buf, Bytes);
+              BlockWrite(F2, Buf, Bytes);
+              Dec(BytesLeft, Bytes);
+            end;
+            Seek(F, Cardinal(FilePos(F)) + RelocPhysSize);  // FilePos(F) = ExportPhysOffset + ExportPhysSize + RelocPhysOffset - (ExportPhysOffset + ExportPhysSize) = RelocPhysOffset  { + RelocPhysSize }
+            BytesLeft := FileSize(F) - FilePos(F);          // FilePos(F) = RelocPhysOffset  + RelocPhysSize
+            while BytesLeft <> 0 do begin
+              Bytes := BytesLeft;
+              if Bytes > SizeOf(Buf) then Bytes := SizeOf(Buf);
+              BlockRead(F, Buf, Bytes);
+              BlockWrite(F2, Buf, Bytes);
+              Dec(BytesLeft, Bytes);
+            end;
           end;
-          Seek(F, Cardinal(FilePos(F)) + RelocPhysSize);
-          BytesLeft := FileSize(F) - FilePos(F);
-          while BytesLeft <> 0 do begin
-            Bytes := BytesLeft;
-            if Bytes > SizeOf(Buf) then Bytes := SizeOf(Buf);
-            BlockRead(F, Buf, Bytes);
-            BlockWrite(F2, Buf, Bytes);
-            Dec(BytesLeft, Bytes);
-          end;
+
           Seek(F2, PEHeaderOffset + SizeOf(PESig));
           BlockWrite(F2, PEHeader, SizeOf(PEHeader));
           BlockWrite(F2, PEOptHeader, SizeOf(PEOptHeader));
@@ -259,22 +338,16 @@ begin
   try
     Writeln('StripReloc v' + Version + ', Copyright (C) 1999-2005 Jordan Russell, www.jrsoftware.org');
     if ParamCount = 0 then begin
-      Writeln('Strip relocation section from Win32 PE files');
+      Writeln('Strip relocation section and export table from Win32 PE files');
       Writeln;
-    1:Writeln('usage:     stripreloc [switches] filename.exe');
+    1:Writeln('usage:     striprelocmod filename.exe');
       Writeln;
-      Writeln('switches:  /B  don''t create .bak backup files');
-      Writeln('           /C  write a valid checksum in the header (instead of zero)');
-      Writeln('           /F  force stripping DLLs instead of skipping them. do not use!');
       Halt(1);
     end;
     Writeln;
 
-    for P := 1 to ParamCount do begin
-      S := ParamStr(P);
-      if S[1] <> '/' then
-        Continue;
-      Delete(S, 1, 1);
+    for P := 1 to 1 do begin
+      S := 'BC';
       I := 1;
       while I <= Length(S) do begin
         case UpCase(S[I]) of
