@@ -81,7 +81,6 @@ var
   PEOptHeader: TImageOptionalHeader;
   PESectionHeaders: PPESectionHeaderArray;
   BytesLeft, Bytes: Cardinal;
-  xBytesSize: Cardinal;
   Buf: array[0..8191] of Byte;
   I: Integer;
   RelocVirtualAddr, RelocPhysOffset, RelocPhysSize: Cardinal;
@@ -193,8 +192,7 @@ begin
       end;
 
       for I := 0 to PEHeader.NumberOfSections-1 do
-        with PESectionHeaders[I] do
-        begin
+        with PESectionHeaders[I] do begin
           if PointerToRawData > RelocPhysOffset then
             Dec(PointerToRawData, RelocPhysSize);
           if PointerToLinenumbers > RelocPhysOffset then
@@ -336,18 +334,29 @@ var
 label 1;
 begin
   try
-    Writeln('StripReloc v' + Version + ', Copyright (C) 1999-2005 Jordan Russell, www.jrsoftware.org');
+    Writeln;
+    Writeln('StripRelocMod v' + Version);
+    Writeln;
+    Writeln('Copyright (C) 1999-2005 Jordan Russell, www.jrsoftware.org');
+    Writeln('Copyright (C) 2013 alex000 https://github.com/alex000/StripRelocMod');
+    Writeln;
     if ParamCount = 0 then begin
       Writeln('Strip relocation section and export table from Win32 PE files');
       Writeln;
-    1:Writeln('usage:     striprelocmod filename.exe');
+    1:Writeln('usage:     striprelocmod [switches] filename.exe');
       Writeln;
+      Writeln('switches:  /B  don''t create .bak backup files');
+      Writeln('           /C  write a valid checksum in the header (instead of zero)');
+      Writeln('           /F  force stripping DLLs instead of skipping them. do not use!');
       Halt(1);
     end;
     Writeln;
 
-    for P := 1 to 1 do begin
-      S := 'BC';
+    for P := 1 to ParamCount do begin
+      S := ParamStr(P);
+      if S[1] <> '/' then
+        Continue;
+      Delete(S, 1, 1);
       I := 1;
       while I <= Length(S) do begin
         case UpCase(S[I]) of
