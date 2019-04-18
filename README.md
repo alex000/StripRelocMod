@@ -10,3 +10,5 @@ When you use C++ builder with Delphi-compiled components, in export section appe
 
 There is software that can remove these records, (PE Corrector for example).
 This is free alternative. [GPL license](http://www.gnu.org/copyleft/gpl.html)
+
+Compile using Borland Delphi 7 to get the smallest exe.
